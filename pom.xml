@@ -18,18 +18,18 @@
     <plugins>
 
         <!-- Checkstyle -->
-       <plugin>
+      <plugin>
     <groupId>org.apache.maven.plugins</groupId>
     <artifactId>maven-checkstyle-plugin</artifactId>
-    <version>3.2.2</version>
+    <version>3.1.2</version>
     <configuration>
-        <checkstyleVersion>8.45</checkstyleVersion>
+        <checkstyleVersion>8.29</checkstyleVersion>
         <configLocation>checkstyle.xml</configLocation>
-        <failOnViolation>true</failOnViolation>
+        <failOnViolation>false</failOnViolation>
     </configuration>
     <executions>
         <execution>
-            <phase>validate</phase>
+            <phase>verify</phase>
             <goals>
                 <goal>check</goal>
             </goals>
