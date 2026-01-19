@@ -8,8 +8,8 @@ public class InventoryTest {
     @Test
     void testAddProductDoesNotThrowException() {
         Inventory inventory = new Inventory();
-        assertDoesNotThrow(() ->
-                inventory.addProduct("Laptop", 5, 1000.0)
-        );
+        Product product = new Product("Laptop", 5, 1000.0);
+
+        assertDoesNotThrow(() -> inventory.addProduct(product));
     }
 }
