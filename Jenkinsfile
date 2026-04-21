@@ -72,59 +72,58 @@ pipeline {
         }
 
         // ══════════════════════════════════════════════════════════════════════
-        // ESTRATEGIA 1 — ETAPA 2: Pruebas
-        // ESTRATEGIA 3 — IC por rama:
-        //   · Ramas de características → solo pruebas unitarias (ciclo corto).
-        //   · Rama main               → unitarias + integración en paralelo.
-        // ESTRATEGIA 4 — Paralelismo entre los dos tipos de prueba.
+        // ESTRATEGIA 1 — ETAPA 2a: Pruebas Unitarias
+        // Se ejecuta en TODAS las ramas para retroalimentación rápida.
+        // ── NOTA: las pruebas unitarias y de integración son SECUENCIALES   ──
+        // ── porque Maven Surefire escribe archivos temporales en             ──
+        // ── target/surefire/ y dos procesos simultáneos en el mismo          ──
+        // ── workspace colisionan sobre esos archivos.                        ──
         // ══════════════════════════════════════════════════════════════════════
-        stage('Pruebas') {
-            parallel {
-
-                // ── Pruebas unitarias: corren en TODAS las ramas ──────────────
-                stage('Pruebas Unitarias') {
-                    steps {
-                        script {
-                            runMaven('test')   // reutiliza Estrategia 2
-                        }
-                        script {
-                            publishTestReports()   // reutiliza Estrategia 2
-                        }
-                        echo 'Pruebas unitarias completadas.'
-                    }
+        stage('Pruebas Unitarias') {
+            steps {
+                script {
+                    runMaven('test')   // reutiliza Estrategia 2
                 }
-
-                // ── Pruebas de integración: solo en rama main ─────────────────
-                // ESTRATEGIA 3 — pipeline más completo al fusionar en main
-                stage('Pruebas de Integracion') {
-                    when {
-                        expression {
-                            return RAMA_ACTUAL == 'main'       ||
-                                   RAMA_ACTUAL == 'origin/main'
-                        }
-                    }
-                    steps {
-                        echo 'Rama main: ejecutando pruebas de integracion...'
-                        script {
-                            // verify ejecuta el ciclo completo incluyendo
-                            // jacoco:report y los plugins de calidad enlazados
-                            // a la fase verify en el pom.xml
-                            runMaven('verify -DskipUnitTests=false')
-                        }
-                        echo 'Pruebas de integracion completadas.'
-                    }
+                script {
+                    publishTestReports()   // reutiliza Estrategia 2
                 }
+                echo 'Pruebas unitarias completadas.'
+            }
+        }
 
-            } // fin parallel Pruebas
+        // ══════════════════════════════════════════════════════════════════════
+        // ESTRATEGIA 1 — ETAPA 2b: Pruebas de Integración
+        // ESTRATEGIA 3 — IC por rama: pipeline más completo al fusionar en main
+        //
+        // -Dsurefire.skip=true evita que Surefire vuelva a ejecutar las
+        // pruebas unitarias (ya corrieron en la etapa anterior); solo se
+        // completa la fase verify para generar el reporte de cobertura JaCoCo
+        // y ejecutar los plugins ligados a esa fase.
+        // ══════════════════════════════════════════════════════════════════════
+        stage('Pruebas de Integracion') {
+            when {
+                expression {
+                    return RAMA_ACTUAL == 'main'       ||
+                           RAMA_ACTUAL == 'origin/main'
+                }
+            }
+            steps {
+                echo 'Rama main: completando fase verify (cobertura JaCoCo)...'
+                script {
+                    runMaven('verify -Dsurefire.skip=true')   // reutiliza Estrategia 2
+                }
+                echo 'Pruebas de integracion y cobertura completadas.'
+            }
         }
 
         // ══════════════════════════════════════════════════════════════════════
         // ESTRATEGIA 1 — ETAPA 3: Análisis de calidad de código
         // ESTRATEGIA 3 — IC por rama: solo se ejecuta en rama main
-        //   Las ramas de características reciben retroalimentación de calidad
-        //   solo con Checkstyle (integrado en la fase verify de arriba).
-        //   Al fusionarse en main, los tres analizadores corren en paralelo.
+        //   Las ramas de características reciben retroalimentación rápida
+        //   (solo compile + unit tests). Al fusionarse en main, los tres
+        //   analizadores corren en paralelo para un análisis completo.
         // ESTRATEGIA 4 — Paralelismo: Checkstyle, PMD y SpotBugs simultáneos
+        //   (son independientes entre sí y no comparten archivos temporales)
         // ══════════════════════════════════════════════════════════════════════
         stage('Analisis de Calidad') {
             when {
