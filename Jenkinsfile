@@ -9,6 +9,11 @@ def runMaven(String goal) {
 pipeline {
     agent any
 
+    tools {
+        maven 'Maven'
+        jdk 'JDK17'
+    }
+
     environment {
         PROYECTO   = 'ProyectoFinal'
         MAVEN_OPTS = '-Xmx512m'
