@@ -1,20 +1,33 @@
 version: 2.1
 
 jobs:
-  probar_circleci:
+  compilar_maven:
     docker:
-      - image: cimg/base:stable
+      - image: cimg/openjdk:17.0
     steps:
       - checkout
 
       - run:
-          name: Verificar que CircleCI funciona
+          name: Verificar estructura del proyecto
           command: |
-            echo "CircleCI funciona correctamente"
             echo "Archivos del proyecto:"
             ls -la
+            echo "Version de Java:"
+            java -version
+            echo "Version de Maven:"
+            mvn -version
+
+      - run:
+          name: Descargar dependencias y compilar con Maven
+          command: |
+            mvn clean compile
+
+      - run:
+          name: Ejecutar pruebas con Maven
+          command: |
+            mvn test
 
 workflows:
-  pipeline_basico:
+  pipeline_maven_basico:
     jobs:
-      - probar_circleci
+      - compilar_maven
