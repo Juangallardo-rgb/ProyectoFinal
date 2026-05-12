@@ -1,0 +1,20 @@
+version: 2.1
+
+jobs:
+  probar_circleci:
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - checkout
+
+      - run:
+          name: Verificar que CircleCI funciona
+          command: |
+            echo "CircleCI funciona correctamente"
+            echo "Archivos del proyecto:"
+            ls -la
+
+workflows:
+  pipeline_basico:
+    jobs:
+      - probar_circleci
