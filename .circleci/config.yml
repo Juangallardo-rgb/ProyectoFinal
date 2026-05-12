@@ -79,6 +79,43 @@ jobs:
           command: |
             mvn checkstyle:check
 
+  notificar_estado_pipeline:
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - run:
+          name: Notificacion de exito
+          when: on_success
+          command: |
+            echo "======================================"
+            echo "PIPELINE EXITOSO"
+            echo "El proyecto ProyectoFinal compilo correctamente."
+            echo "Las pruebas se ejecutaron correctamente."
+            echo "La validacion Checkstyle finalizo sin errores."
+            echo "Estado: SUCCESS"
+            echo "======================================"
+
+      - run:
+          name: Notificacion de error
+          when: on_fail
+          command: |
+            echo "======================================"
+            echo "PIPELINE FALLIDO"
+            echo "Uno de los jobs anteriores presento errores."
+            echo "Revisar compilacion, pruebas o Checkstyle."
+            echo "Estado: FAILED"
+            echo "======================================"
+
+      - run:
+          name: Notificacion final siempre ejecutada
+          when: always
+          command: |
+            echo "======================================"
+            echo "ACCION POST PIPELINE"
+            echo "Este paso se ejecuta siempre al finalizar el pipeline."
+            echo "Sirve como evidencia de accion posterior."
+            echo "======================================"
+
 workflows:
   pipeline_java_maven:
     jobs:
@@ -95,3 +132,8 @@ workflows:
       - validar_checkstyle:
           requires:
             - compilar_proyecto
+
+      - notificar_estado_pipeline:
+          requires:
+            - ejecutar_pruebas_paralelas
+            - validar_checkstyle
