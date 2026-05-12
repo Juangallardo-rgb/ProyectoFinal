@@ -30,16 +30,43 @@ jobs:
           command: |
             mvn clean compile
 
-  ejecutar_pruebas:
+  ejecutar_pruebas_paralelas:
     docker:
       - image: cimg/openjdk:17.0
+    parallelism: 2
     steps:
       - checkout
 
       - run:
-          name: Ejecutar pruebas unitarias
+          name: Buscar y dividir pruebas entre contenedores
           command: |
-            mvn test
+            echo "Buscando archivos de prueba Java..."
+            mkdir -p test-results
+
+            TESTFILES=$(circleci tests glob "src/test/java/**/*Test.java" | circleci tests split --split-by=timings)
+
+            echo "Pruebas asignadas a este contenedor:"
+            echo "$TESTFILES"
+
+            if [ -z "$TESTFILES" ]; then
+              echo "No se encontraron pruebas específicas para dividir."
+              echo "Ejecutando mvn test completo."
+              mvn test
+            else
+              TEST_CLASSES=$(echo "$TESTFILES" | sed 's|src/test/java/||g' | sed 's|.java||g' | tr '/' '.' | paste -sd, -)
+
+              echo "Clases de prueba que ejecutara Maven:"
+              echo "$TEST_CLASSES"
+
+              mvn test -Dtest="$TEST_CLASSES"
+            fi
+
+      - store_test_results:
+          path: target/surefire-reports
+
+      - store_artifacts:
+          path: target/surefire-reports
+          destination: resultados-pruebas
 
   validar_checkstyle:
     docker:
@@ -61,7 +88,7 @@ workflows:
           requires:
             - verificar_entorno
 
-      - ejecutar_pruebas:
+      - ejecutar_pruebas_paralelas:
           requires:
             - compilar_proyecto
 
