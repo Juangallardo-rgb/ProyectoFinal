@@ -1,33 +1,70 @@
 version: 2.1
 
 jobs:
-  compilar_maven:
+  verificar_entorno:
     docker:
       - image: cimg/openjdk:17.0
     steps:
       - checkout
 
       - run:
-          name: Verificar estructura del proyecto
+          name: Verificar archivos y herramientas
           command: |
-            echo "Archivos del proyecto:"
+            echo "Verificando estructura del proyecto"
             ls -la
-            echo "Version de Java:"
+
+            echo "Verificando version de Java"
             java -version
-            echo "Version de Maven:"
+
+            echo "Verificando version de Maven"
             mvn -version
 
+  compilar_proyecto:
+    docker:
+      - image: cimg/openjdk:17.0
+    steps:
+      - checkout
+
       - run:
-          name: Descargar dependencias y compilar con Maven
+          name: Compilar proyecto con Maven
           command: |
             mvn clean compile
 
+  ejecutar_pruebas:
+    docker:
+      - image: cimg/openjdk:17.0
+    steps:
+      - checkout
+
       - run:
-          name: Ejecutar pruebas con Maven
+          name: Ejecutar pruebas unitarias
           command: |
             mvn test
 
+  validar_checkstyle:
+    docker:
+      - image: cimg/openjdk:17.0
+    steps:
+      - checkout
+
+      - run:
+          name: Validar estilo de codigo con Checkstyle
+          command: |
+            mvn checkstyle:check
+
 workflows:
-  pipeline_maven_basico:
+  pipeline_java_maven:
     jobs:
-      - compilar_maven
+      - verificar_entorno
+
+      - compilar_proyecto:
+          requires:
+            - verificar_entorno
+
+      - ejecutar_pruebas:
+          requires:
+            - compilar_proyecto
+
+      - validar_checkstyle:
+          requires:
+            - compilar_proyecto
