@@ -1,130 +1,98 @@
 version: 2.1
 
+executors:
+  java:
+    docker:
+      - image: cimg/openjdk:17.0
+
+commands:
+  restore_maven_cache:
+    steps:
+      - restore_cache:
+          keys:
+            - maven-{{ checksum "pom.xml" }}
+            - maven-
+
+  save_maven_cache:
+    steps:
+      - save_cache:
+          key: maven-{{ checksum "pom.xml" }}
+          paths:
+            - ~/.m2
+
+  notify_success:
+    steps:
+      - run:
+          name: Notificacion exito
+          when: on_success
+          command: echo "SUCCESS - $CIRCLE_WORKFLOW_JOB - Rama $CIRCLE_BRANCH"
+
+  notify_fail:
+    steps:
+      - run:
+          name: Notificacion error
+          when: on_fail
+          command: echo "FAILED - $CIRCLE_WORKFLOW_JOB - Rama $CIRCLE_BRANCH"
+
 jobs:
   verificar_entorno:
-    docker:
-      - image: cimg/openjdk:17.0
+    executor: java
     steps:
       - checkout
-
-      - run:
-          name: Verificar archivos y herramientas
-          command: |
-            echo "Verificando estructura del proyecto"
-            ls -la
-
-            echo "Rama actual:"
-            echo $CIRCLE_BRANCH
-
-            echo "Verificando version de Java"
-            java -version
-
-            echo "Verificando version de Maven"
-            mvn -version
+      - run: java -version
+      - run: mvn -version
+      - notify_success
+      - notify_fail
 
   compilar_proyecto:
-    docker:
-      - image: cimg/openjdk:17.0
+    executor: java
     steps:
       - checkout
-
-      - run:
-          name: Compilar proyecto con Maven
-          command: |
-            echo "Compilando proyecto en la rama: $CIRCLE_BRANCH"
-            mvn clean compile
+      - restore_maven_cache
+      - run: mvn clean compile
+      - save_maven_cache
+      - notify_success
+      - notify_fail
 
   ejecutar_pruebas_paralelas:
-    docker:
-      - image: cimg/openjdk:17.0
+    executor: java
     parallelism: 2
     steps:
       - checkout
-
+      - restore_maven_cache
       - run:
-          name: Buscar y dividir pruebas entre contenedores
+          name: Ejecutar pruebas en paralelo
           command: |
-            echo "Ejecutando pruebas paralelas en la rama: $CIRCLE_BRANCH"
-            echo "Buscando archivos de prueba Java..."
-
-            mkdir -p test-results
-
             TESTFILES=$(circleci tests glob "src/test/java/**/*Test.java" | circleci tests split --split-by=timings)
 
-            echo "Pruebas asignadas a este contenedor:"
-            echo "$TESTFILES"
-
             if [ -z "$TESTFILES" ]; then
-              echo "No se encontraron pruebas específicas para dividir."
-              echo "Ejecutando mvn test completo."
               mvn test
             else
               TEST_CLASSES=$(echo "$TESTFILES" | sed 's|src/test/java/||g' | sed 's|.java||g' | tr '/' '.' | paste -sd, -)
-
-              echo "Clases de prueba que ejecutara Maven:"
-              echo "$TEST_CLASSES"
-
               mvn test -Dtest="$TEST_CLASSES"
             fi
-
       - store_test_results:
           path: target/surefire-reports
-
       - store_artifacts:
           path: target/surefire-reports
           destination: resultados-pruebas
+      - notify_success
+      - notify_fail
 
   validar_checkstyle:
-    docker:
-      - image: cimg/openjdk:17.0
+    executor: java
     steps:
       - checkout
+      - restore_maven_cache
+      - run: mvn checkstyle:check
+      - notify_success
+      - notify_fail
 
-      - run:
-          name: Validar estilo de codigo con Checkstyle
-          command: |
-            echo "Validando Checkstyle en la rama: $CIRCLE_BRANCH"
-            mvn checkstyle:check
-
-  notificar_estado_pipeline:
+  notificar_pipeline:
     docker:
       - image: cimg/base:stable
     steps:
-      - run:
-          name: Notificacion de exito
-          when: on_success
-          command: |
-            echo "======================================"
-            echo "PIPELINE EXITOSO"
-            echo "Rama ejecutada: $CIRCLE_BRANCH"
-            echo "El proyecto compilo correctamente."
-            echo "Las pruebas se ejecutaron correctamente."
-            echo "La validacion Checkstyle finalizo sin errores."
-            echo "Estado: SUCCESS"
-            echo "======================================"
-
-      - run:
-          name: Notificacion de error
-          when: on_fail
-          command: |
-            echo "======================================"
-            echo "PIPELINE FALLIDO"
-            echo "Rama ejecutada: $CIRCLE_BRANCH"
-            echo "Uno de los jobs anteriores presento errores."
-            echo "Revisar compilacion, pruebas o Checkstyle."
-            echo "Estado: FAILED"
-            echo "======================================"
-
-      - run:
-          name: Notificacion final siempre ejecutada
-          when: always
-          command: |
-            echo "======================================"
-            echo "ACCION POST PIPELINE"
-            echo "Rama ejecutada: $CIRCLE_BRANCH"
-            echo "Este paso se ejecuta al finalizar el pipeline."
-            echo "Sirve como evidencia de accion posterior."
-            echo "======================================"
+      - run: echo "PIPELINE OK - $CIRCLE_BRANCH"
 
 workflows:
   pipeline_desarrollo:
@@ -132,79 +100,69 @@ workflows:
       - verificar_entorno:
           filters:
             branches:
-              only:
-                - desarrollo
+              only: desarrollo
 
       - compilar_proyecto:
           requires:
             - verificar_entorno
           filters:
             branches:
-              only:
-                - desarrollo
+              only: desarrollo
 
       - ejecutar_pruebas_paralelas:
           requires:
             - compilar_proyecto
           filters:
             branches:
-              only:
-                - desarrollo
+              only: desarrollo
 
       - validar_checkstyle:
           requires:
             - compilar_proyecto
           filters:
             branches:
-              only:
-                - desarrollo
+              only: desarrollo
 
-      - notificar_estado_pipeline:
+      - notificar_pipeline:
           requires:
             - ejecutar_pruebas_paralelas
             - validar_checkstyle
           filters:
             branches:
-              only:
-                - desarrollo
+              only: desarrollo
 
   pipeline_main:
     jobs:
       - verificar_entorno:
           filters:
             branches:
-              only:
-                - main
+              only: main
 
       - compilar_proyecto:
           requires:
             - verificar_entorno
           filters:
             branches:
-              only:
-                - main
+              only: main
 
       - ejecutar_pruebas_paralelas:
           requires:
             - compilar_proyecto
           filters:
             branches:
-              only:
-                - main
+              only: main
 
       - validar_checkstyle:
           requires:
             - compilar_proyecto
           filters:
             branches:
-              only:
-                - main
+              only: main
 
-      - notificar_estado_pipeline:
+      - notificar_pipeline:
           requires:
             - ejecutar_pruebas_paralelas
             - validar_checkstyle
           filters:
             branches:
-              only:
-                - main
+              only: main
