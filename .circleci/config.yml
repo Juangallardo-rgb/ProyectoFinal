@@ -13,6 +13,9 @@ jobs:
             echo "Verificando estructura del proyecto"
             ls -la
 
+            echo "Rama actual:"
+            echo $CIRCLE_BRANCH
+
             echo "Verificando version de Java"
             java -version
 
@@ -28,6 +31,7 @@ jobs:
       - run:
           name: Compilar proyecto con Maven
           command: |
+            echo "Compilando proyecto en la rama: $CIRCLE_BRANCH"
             mvn clean compile
 
   ejecutar_pruebas_paralelas:
@@ -40,7 +44,9 @@ jobs:
       - run:
           name: Buscar y dividir pruebas entre contenedores
           command: |
+            echo "Ejecutando pruebas paralelas en la rama: $CIRCLE_BRANCH"
             echo "Buscando archivos de prueba Java..."
+
             mkdir -p test-results
 
             TESTFILES=$(circleci tests glob "src/test/java/**/*Test.java" | circleci tests split --split-by=timings)
@@ -77,6 +83,7 @@ jobs:
       - run:
           name: Validar estilo de codigo con Checkstyle
           command: |
+            echo "Validando Checkstyle en la rama: $CIRCLE_BRANCH"
             mvn checkstyle:check
 
   notificar_estado_pipeline:
@@ -89,7 +96,8 @@ jobs:
           command: |
             echo "======================================"
             echo "PIPELINE EXITOSO"
-            echo "El proyecto ProyectoFinal compilo correctamente."
+            echo "Rama ejecutada: $CIRCLE_BRANCH"
+            echo "El proyecto compilo correctamente."
             echo "Las pruebas se ejecutaron correctamente."
             echo "La validacion Checkstyle finalizo sin errores."
             echo "Estado: SUCCESS"
@@ -101,6 +109,7 @@ jobs:
           command: |
             echo "======================================"
             echo "PIPELINE FALLIDO"
+            echo "Rama ejecutada: $CIRCLE_BRANCH"
             echo "Uno de los jobs anteriores presento errores."
             echo "Revisar compilacion, pruebas o Checkstyle."
             echo "Estado: FAILED"
@@ -112,28 +121,90 @@ jobs:
           command: |
             echo "======================================"
             echo "ACCION POST PIPELINE"
-            echo "Este paso se ejecuta siempre al finalizar el pipeline."
+            echo "Rama ejecutada: $CIRCLE_BRANCH"
+            echo "Este paso se ejecuta al finalizar el pipeline."
             echo "Sirve como evidencia de accion posterior."
             echo "======================================"
 
 workflows:
-  pipeline_java_maven:
+  pipeline_desarrollo:
     jobs:
-      - verificar_entorno
+      - verificar_entorno:
+          filters:
+            branches:
+              only:
+                - desarrollo
 
       - compilar_proyecto:
           requires:
             - verificar_entorno
+          filters:
+            branches:
+              only:
+                - desarrollo
 
       - ejecutar_pruebas_paralelas:
           requires:
             - compilar_proyecto
+          filters:
+            branches:
+              only:
+                - desarrollo
 
       - validar_checkstyle:
           requires:
             - compilar_proyecto
+          filters:
+            branches:
+              only:
+                - desarrollo
 
       - notificar_estado_pipeline:
           requires:
             - ejecutar_pruebas_paralelas
             - validar_checkstyle
+          filters:
+            branches:
+              only:
+                - desarrollo
+
+  pipeline_main:
+    jobs:
+      - verificar_entorno:
+          filters:
+            branches:
+              only:
+                - main
+
+      - compilar_proyecto:
+          requires:
+            - verificar_entorno
+          filters:
+            branches:
+              only:
+                - main
+
+      - ejecutar_pruebas_paralelas:
+          requires:
+            - compilar_proyecto
+          filters:
+            branches:
+              only:
+                - main
+
+      - validar_checkstyle:
+          requires:
+            - compilar_proyecto
+          filters:
+            branches:
+              only:
+                - main
+
+      - notificar_estado_pipeline:
+          requires:
+            - ejecutar_pruebas_paralelas
+            - validar_checkstyle
+          filters:
+            branches:
+              only:
+                - main
