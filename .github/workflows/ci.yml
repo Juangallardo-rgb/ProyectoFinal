@@ -1,4 +1,4 @@
-name: Java CI with Maven
+name: CI - Build and SAST with SonarQube
 
 on:
   push:
@@ -7,18 +7,69 @@ on:
     branches: [ "main" ]
 
 jobs:
-  build:
+  build-and-sast:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Set up JDK 11
-        uses: actions/setup-java@v3
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '11'
+          java-version: '17'
+          cache: 'maven'
 
-      - name: Build with Maven
-        run: mvn clean verify
+      - name: Build and run tests
+        run: mvn -B clean verify
+
+      - name: Run SonarQube SAST Analysis
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mvn -B org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
+            -Dsonar.host.url=https://sonarcloud.io \
+            -Dsonar.organization=juangallardo-rgb \
+            -Dsonar.projectKey=Juangallardo-rgb_ProyectoFinal \
+            -Dsonar.token=$SONAR_TOKEN \
+            -Dsonar.qualitygate.wait=true \
+            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
+
+      - name: Create SAST feedback artifact
+        if: always()
+        run: |
+          mkdir -p sast-feedback
+
+          echo "# Retroalimentación SAST - SonarQube Cloud" > sast-feedback/retroalimentacion-sast.md
+          echo "" >> sast-feedback/retroalimentacion-sast.md
+          echo "## Información del análisis" >> sast-feedback/retroalimentacion-sast.md
+          echo "- Repositorio: $GITHUB_REPOSITORY" >> sast-feedback/retroalimentacion-sast.md
+          echo "- Rama: $GITHUB_REF_NAME" >> sast-feedback/retroalimentacion-sast.md
+          echo "- Commit: $GITHUB_SHA" >> sast-feedback/retroalimentacion-sast.md
+          echo "- Herramienta SAST: SonarQube Cloud" >> sast-feedback/retroalimentacion-sast.md
+          echo "- Lenguaje analizado: Java" >> sast-feedback/retroalimentacion-sast.md
+          echo "" >> sast-feedback/retroalimentacion-sast.md
+
+          echo "## Retroalimentación generada" >> sast-feedback/retroalimentacion-sast.md
+          echo "El análisis SAST fue ejecutado dentro del pipeline de integración continua mediante GitHub Actions." >> sast-feedback/retroalimentacion-sast.md
+          echo "La retroalimentación principal se encuentra en el dashboard de SonarQube Cloud, donde se visualizan bugs, vulnerabilidades, code smells, cobertura, duplicaciones y estado del Quality Gate." >> sast-feedback/retroalimentacion-sast.md
+          echo "" >> sast-feedback/retroalimentacion-sast.md
+
+          if [ -f target/sonar/report-task.txt ]; then
+            echo "## Archivo técnico generado por SonarQube" >> sast-feedback/retroalimentacion-sast.md
+            cat target/sonar/report-task.txt >> sast-feedback/retroalimentacion-sast.md
+            cp target/sonar/report-task.txt sast-feedback/report-task.txt
+          else
+            echo "No se encontró el archivo report-task.txt. Revisar los logs del pipeline para validar si el análisis SAST finalizó correctamente." >> sast-feedback/retroalimentacion-sast.md
+          fi
+
+      - name: Upload SAST feedback artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: retroalimentacion-sast-sonarqube
+          path: sast-feedback/
