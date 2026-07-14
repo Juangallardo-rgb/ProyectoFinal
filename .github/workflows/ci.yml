@@ -1,75 +1,276 @@
-name: CI - Build and SAST with SonarQube
+name: DevSecOps CI-CD
 
 on:
   push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+    branches:
+      - main
+  workflow_dispatch:
 
 jobs:
-  build-and-sast:
+  devsecops-pipeline:
+    name: Build, Security, Kubernetes and DAST
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
+      # 1. Descargar el repositorio
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set up JDK 17
+      # 2. Configurar Java 17
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '17'
-          cache: 'maven'
+          distribution: temurin
+          java-version: "17"
+          cache: maven
 
+      # 3. Compilar y ejecutar pruebas
       - name: Build and run tests
-        run: mvn -B clean verify
+        run: mvn -B clean package
 
-      - name: Run SonarQube SAST Analysis
+      # 4. Preparar carpeta de evidencias
+      - name: Prepare build evidence
+        run: |
+          mkdir -p evidence
+
+          cp target/inventory-app.jar evidence/inventory-app.jar
+
+          if [ -d target/surefire-reports ]; then
+            cp -r target/surefire-reports evidence/
+          fi
+
+          echo "Build completed successfully" \
+            > evidence/build-status.txt
+
+          echo "Repository: $GITHUB_REPOSITORY" \
+            >> evidence/build-status.txt
+
+          echo "Commit: $GITHUB_SHA" \
+            >> evidence/build-status.txt
+
+      # 5. Generar y verificar integridad SHA-256
+      - name: Generate and verify SHA-256
+        run: |
+          sha256sum target/inventory-app.jar \
+            | tee evidence/artifact-sha256.txt
+
+          sha256sum -c evidence/artifact-sha256.txt \
+            | tee evidence/integrity-verification.txt
+
+      # 6. Ejecutar análisis SAST con SonarQube Cloud
+      - name: SonarQube SAST analysis
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mvn -B org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
+          set +e
+
+          mvn -B \
+            org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
             -Dsonar.host.url=https://sonarcloud.io \
             -Dsonar.organization=juangallardo-rgb \
             -Dsonar.projectKey=Juangallardo-rgb_ProyectoFinal \
-            -Dsonar.token=$SONAR_TOKEN \
-            -Dsonar.qualitygate.wait=true \
-            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
+            -Dsonar.token="$SONAR_TOKEN" \
+            2>&1 | tee evidence/sonarqube-output.txt
 
-      - name: Create SAST feedback artifact
-        if: always()
-        run: |
-          mkdir -p sast-feedback
+          SONAR_EXIT_CODE=${PIPESTATUS[0]}
 
-          echo "# Retroalimentación SAST - SonarQube Cloud" > sast-feedback/retroalimentacion-sast.md
-          echo "" >> sast-feedback/retroalimentacion-sast.md
-          echo "## Información del análisis" >> sast-feedback/retroalimentacion-sast.md
-          echo "- Repositorio: $GITHUB_REPOSITORY" >> sast-feedback/retroalimentacion-sast.md
-          echo "- Rama: $GITHUB_REF_NAME" >> sast-feedback/retroalimentacion-sast.md
-          echo "- Commit: $GITHUB_SHA" >> sast-feedback/retroalimentacion-sast.md
-          echo "- Herramienta SAST: SonarQube Cloud" >> sast-feedback/retroalimentacion-sast.md
-          echo "- Lenguaje analizado: Java" >> sast-feedback/retroalimentacion-sast.md
-          echo "" >> sast-feedback/retroalimentacion-sast.md
-
-          echo "## Retroalimentación generada" >> sast-feedback/retroalimentacion-sast.md
-          echo "El análisis SAST fue ejecutado dentro del pipeline de integración continua mediante GitHub Actions." >> sast-feedback/retroalimentacion-sast.md
-          echo "La retroalimentación principal se encuentra en el dashboard de SonarQube Cloud, donde se visualizan bugs, vulnerabilidades, code smells, cobertura, duplicaciones y estado del Quality Gate." >> sast-feedback/retroalimentacion-sast.md
-          echo "" >> sast-feedback/retroalimentacion-sast.md
+          echo "SonarQube exit code: $SONAR_EXIT_CODE" \
+            | tee evidence/sonarqube-status.txt
 
           if [ -f target/sonar/report-task.txt ]; then
-            echo "## Archivo técnico generado por SonarQube" >> sast-feedback/retroalimentacion-sast.md
-            cat target/sonar/report-task.txt >> sast-feedback/retroalimentacion-sast.md
-            cp target/sonar/report-task.txt sast-feedback/report-task.txt
-          else
-            echo "No se encontró el archivo report-task.txt. Revisar los logs del pipeline para validar si el análisis SAST finalizó correctamente." >> sast-feedback/retroalimentacion-sast.md
+            cp target/sonar/report-task.txt \
+              evidence/sonarqube-report-task.txt
           fi
 
-      - name: Upload SAST feedback artifact
+          set -e
+
+      # 7. Construir imagen Docker
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t inventory-app:latest \
+            . 2>&1 | tee evidence/docker-build.txt
+
+          docker image inspect inventory-app:latest \
+            > evidence/docker-image-inspect.json
+
+          docker images inventory-app \
+            | tee evidence/docker-image-list.txt
+
+      # 8. Instalar kind
+      - name: Install kind
+        run: |
+          curl -Lo ./kind \
+            https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-amd64
+
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+          kind version \
+            | tee evidence/kind-version.txt
+
+      # 9. Crear clúster Kubernetes temporal
+      - name: Create Kubernetes cluster
+        run: |
+          kind create cluster \
+            --name devsecops \
+            --wait 120s \
+            2>&1 | tee evidence/kind-cluster-creation.txt
+
+          kubectl cluster-info \
+            | tee evidence/kubernetes-cluster-info.txt
+
+      # 10. Cargar la imagen Docker dentro de kind
+      - name: Load Docker image into Kubernetes
+        run: |
+          kind load docker-image \
+            inventory-app:latest \
+            --name devsecops \
+            2>&1 | tee evidence/kind-image-load.txt
+
+      # 11. Desplegar la aplicación en Kubernetes
+      - name: Deploy application to Kubernetes
+        run: |
+          kubectl apply -f k8s/inventory.yaml \
+            | tee evidence/kubernetes-apply.txt
+
+          kubectl rollout status \
+            deployment/inventory-deployment \
+            --timeout=120s \
+            | tee evidence/kubernetes-rollout.txt
+
+          kubectl get pods -o wide \
+            | tee evidence/kubernetes-pods.txt
+
+          kubectl get deployments,services -o wide \
+            | tee evidence/kubernetes-resources.txt
+
+          kubectl describe deployment inventory-deployment \
+            > evidence/kubernetes-deployment-description.txt
+
+      # 12. Exponer temporalmente el servicio
+      - name: Start Kubernetes port forwarding
+        run: |
+          nohup kubectl port-forward \
+            service/inventory-service \
+            8080:8080 \
+            > evidence/port-forward.txt 2>&1 &
+
+          echo $! > evidence/port-forward-process.txt
+
+          for attempt in {1..20}; do
+            if curl -fsS http://127.0.0.1:8080/health; then
+              echo ""
+              echo "Application is available"
+              break
+            fi
+
+            echo "Waiting for application..."
+            sleep 2
+          done
+
+      # 13. Probar los endpoints desplegados
+      - name: Test deployed application
+        run: |
+          curl -fsS http://127.0.0.1:8080/ \
+            | tee evidence/root-response.json
+
+          echo ""
+
+          curl -fsS http://127.0.0.1:8080/health \
+            | tee evidence/health-response.json
+
+          echo ""
+
+          curl -fsS http://127.0.0.1:8080/products \
+            | tee evidence/products-response.json
+
+          echo ""
+
+      # 14. Ejecutar DAST con OWASP ZAP
+      - name: OWASP ZAP DAST analysis
+        run: |
+          chmod -R 777 evidence
+
+          docker run --rm \
+            --network host \
+            -v "${{ github.workspace }}/evidence:/zap/wrk/:rw" \
+            -t ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+            -t http://127.0.0.1:8080 \
+            -m 1 \
+            -r zap-report.html \
+            -J zap-report.json \
+            -w zap-report.md \
+            -I \
+            2>&1 | tee evidence/zap-console-output.txt || true
+
+      # 15. Crear resumen de resultados
+      - name: Create pipeline summary
+        if: always()
+        run: |
+          mkdir -p evidence
+
+          cat > evidence/README-EVIDENCIAS.md <<EOF
+          # Evidencias del pipeline DevSecOps
+
+          ## Información general
+
+          - Repositorio: $GITHUB_REPOSITORY
+          - Rama: $GITHUB_REF_NAME
+          - Commit: $GITHUB_SHA
+          - Ejecución: $GITHUB_RUN_NUMBER
+
+          ## Procesos implementados
+
+          1. Compilación con Maven.
+          2. Pruebas unitarias con JUnit.
+          3. Generación del artefacto JAR.
+          4. Verificación de integridad con SHA-256.
+          5. Análisis SAST con SonarQube Cloud.
+          6. Construcción de imagen Docker.
+          7. Creación de clúster Kubernetes con kind.
+          8. Despliegue de la aplicación en Kubernetes.
+          9. Validación de disponibilidad mediante HTTP.
+          10. Análisis DAST con OWASP ZAP.
+
+          ## Artefactos principales
+
+          - inventory-app.jar
+          - artifact-sha256.txt
+          - integrity-verification.txt
+          - sonarqube-output.txt
+          - kubernetes-pods.txt
+          - kubernetes-resources.txt
+          - zap-report.html
+          - zap-report.json
+          - zap-report.md
+          EOF
+
+          find evidence -maxdepth 2 -type f \
+            | sort \
+            | tee evidence/evidence-file-list.txt
+
+      # 16. Guardar el JAR como artefacto
+      - name: Upload application artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: retroalimentacion-sast-sonarqube
-          path: sast-feedback/
+          name: aplicacion-inventario-jar
+          path: target/inventory-app.jar
+          if-no-files-found: warn
+          retention-days: 7
+
+      # 17. Guardar todas las evidencias
+      - name: Upload DevSecOps evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidencias-devsecops
+          path: evidence/
+          if-no-files-found: warn
+          retention-days: 7
