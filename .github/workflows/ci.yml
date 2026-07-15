@@ -331,33 +331,38 @@ jobs:
       # 14. DAST CON OWASP ZAP
       # ============================================================
 
-      # Los reportes se crean dentro del contenedor y después se
-      # copian. Así evitamos utilizar chmod 777 en el runner.
       - name: OWASP ZAP DAST analysis
         run: |
-          docker create \
-            --name zap-scan \
+          RUNNER_UID="$(id -u)"
+          RUNNER_GID="$(id -g)"
+
+          # El usuario interno de la imagen ZAP utiliza UID 1000.
+          # Se asigna temporalmente la carpeta sin utilizar chmod 777.
+          sudo chown -R 1000:1000 evidence
+          sudo chmod -R u+rwX,go-rwx evidence
+
+          set +e
+
+          docker run --rm \
             --network host \
-            --workdir /zap/wrk \
-            ghcr.io/zaproxy/zaproxy:stable \
+            -v "${{ github.workspace }}/evidence:/zap/wrk/:rw" \
+            -t ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
             -t http://127.0.0.1:8080 \
             -m 1 \
             -r zap-report.html \
             -J zap-report.json \
             -w zap-report.md \
-            -I
-
-          set +e
-
-          docker start \
-            --attach \
-            zap-scan \
+            -I \
             > /tmp/zap-console-output.txt 2>&1
 
           ZAP_EXIT_CODE=$?
 
           set -e
+
+          # Devolver la propiedad de los archivos al runner.
+          sudo chown -R "${RUNNER_UID}:${RUNNER_GID}" evidence
+          sudo chmod -R u+rwX,go-rwx evidence
 
           cp /tmp/zap-console-output.txt \
             evidence/zap-console-output.txt
@@ -365,23 +370,12 @@ jobs:
           echo "OWASP ZAP exit code: ${ZAP_EXIT_CODE}" \
             | tee evidence/zap-exit-code.txt
 
-          docker cp \
-            zap-scan:/zap/wrk/zap-report.html \
-            evidence/zap-report.html
-
-          docker cp \
-            zap-scan:/zap/wrk/zap-report.json \
-            evidence/zap-report.json
-
-          docker cp \
-            zap-scan:/zap/wrk/zap-report.md \
-            evidence/zap-report.md
-
-          docker rm zap-scan
-
+          # Confirmar que ZAP produjo los tres reportes.
           test -s evidence/zap-report.html
           test -s evidence/zap-report.json
           test -s evidence/zap-report.md
+
+          echo "OWASP ZAP reports generated successfully"
 
       # ============================================================
       # 15. CREAR RESUMEN DE TODAS LAS EVIDENCIAS
