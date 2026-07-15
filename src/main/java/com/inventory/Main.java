@@ -13,8 +13,15 @@ public final class Main {
     }
 
     public static void main(String[] args) throws IOException {
+        HttpServer server = createServer(8080);
+        server.start();
+
+        System.out.println("Inventory API running on port 8080");
+    }
+
+    static HttpServer createServer(int port) throws IOException {
         HttpServer server = HttpServer.create(
-                new InetSocketAddress(8080),
+                new InetSocketAddress(port),
                 0
         );
 
@@ -37,9 +44,7 @@ public final class Main {
         ));
 
         server.setExecutor(null);
-        server.start();
-
-        System.out.println("Inventory API running on port 8080");
+        return server;
     }
 
     private static void sendJson(
