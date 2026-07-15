@@ -202,7 +202,16 @@ jobs:
       # 14. Ejecutar DAST con OWASP ZAP
       - name: OWASP ZAP DAST analysis
         run: |
-          chmod -R 777 evidence
+          RUNNER_UID="$(id -u)"
+          RUNNER_GID="$(id -g)"
+          ZAP_UID="1000"
+
+          # Dar temporalmente la carpeta al usuario interno de ZAP,
+          # sin conceder permisos a todos los usuarios.
+          sudo chown -R "${ZAP_UID}:${ZAP_UID}" evidence
+          sudo chmod -R u+rwX,go-rwx evidence
+
+          set +e
 
           docker run --rm \
             --network host \
@@ -215,7 +224,21 @@ jobs:
             -J zap-report.json \
             -w zap-report.md \
             -I \
-            2>&1 | tee evidence/zap-console-output.txt || true
+            > /tmp/zap-console-output.txt 2>&1
+
+          ZAP_EXIT_CODE=$?
+
+          set -e
+
+          # Devolver los archivos al usuario de GitHub Actions.
+          sudo chown -R "${RUNNER_UID}:${RUNNER_GID}" evidence
+          sudo chmod -R u+rwX,go-rwx evidence
+
+          mv /tmp/zap-console-output.txt \
+            evidence/zap-console-output.txt
+
+          echo "OWASP ZAP exit code: ${ZAP_EXIT_CODE}" \
+            > evidence/zap-exit-code.txt
 
       # 15. Crear resumen de resultados
       - name: Create pipeline summary
