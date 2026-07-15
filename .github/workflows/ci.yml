@@ -6,6 +6,20 @@ on:
       - main
   workflow_dispatch:
 
+# El workflow solo necesita leer el repositorio.
+permissions:
+  contents: read
+
+env:
+  APP_IMAGE: inventory-app:latest
+
+  # Versión de kind y checksum oficial del binario Linux AMD64.
+  KIND_VERSION: v0.32.0
+  KIND_SHA256: 50030de23cf40a18505f20426f6a8506bedf13c6e509244bd1fa9463721b0f54
+
+  # Imagen de nodo Kubernetes fijada mediante digest.
+  KIND_NODE_IMAGE: kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
+
 jobs:
   devsecops-pipeline:
     name: Build, Security, Kubernetes and DAST
@@ -13,13 +27,19 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      # 1. Descargar el repositorio
+      # ============================================================
+      # 1. DESCARGAR EL REPOSITORIO
+      # ============================================================
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # 2. Configurar Java 17
+      # ============================================================
+      # 2. CONFIGURAR JAVA
+      # ============================================================
+
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
@@ -27,87 +47,130 @@ jobs:
           java-version: "17"
           cache: maven
 
-      # 3. Compilar y ejecutar pruebas
-      - name: Build and run tests
-        run: mvn -B clean package
+      # ============================================================
+      # 3. BUILD, PRUEBAS Y COBERTURA
+      # ============================================================
 
-      # 4. Preparar carpeta de evidencias
+      - name: Build, run tests and generate coverage
+        run: |
+          mvn -B clean verify
+
+          test -f target/inventory-app.jar
+          test -f target/site/jacoco/jacoco.xml
+
+      # ============================================================
+      # 4. PREPARAR EVIDENCIAS
+      # ============================================================
+
       - name: Prepare build evidence
         run: |
           mkdir -p evidence
 
-          cp target/inventory-app.jar evidence/inventory-app.jar
+          cp target/inventory-app.jar \
+            evidence/inventory-app.jar
 
           if [ -d target/surefire-reports ]; then
-            cp -r target/surefire-reports evidence/
+            cp -r target/surefire-reports \
+              evidence/surefire-reports
           fi
 
-          echo "Build completed successfully" \
-            > evidence/build-status.txt
+          if [ -d target/site/jacoco ]; then
+            cp -r target/site/jacoco \
+              evidence/jacoco
+          fi
 
-          echo "Repository: $GITHUB_REPOSITORY" \
-            >> evidence/build-status.txt
+          {
+            echo "Build completed successfully"
+            echo "Repository: ${GITHUB_REPOSITORY}"
+            echo "Branch: ${GITHUB_REF_NAME}"
+            echo "Commit: ${GITHUB_SHA}"
+            echo "Workflow run: ${GITHUB_RUN_NUMBER}"
+          } > evidence/build-status.txt
 
-          echo "Commit: $GITHUB_SHA" \
-            >> evidence/build-status.txt
+      # ============================================================
+      # 5. INTEGRIDAD DEL ARTEFACTO JAR
+      # ============================================================
 
-      # 5. Generar y verificar integridad SHA-256
-      - name: Generate and verify SHA-256
+      - name: Generate and verify JAR SHA-256
         run: |
           sha256sum target/inventory-app.jar \
             | tee evidence/artifact-sha256.txt
 
-          sha256sum -c evidence/artifact-sha256.txt \
+          sha256sum --check \
+            evidence/artifact-sha256.txt \
             | tee evidence/integrity-verification.txt
 
-      # 6. Ejecutar análisis SAST con SonarQube Cloud
-      - name: SonarQube SAST analysis
+      # ============================================================
+      # 6. SAST CON SONARQUBE CLOUD
+      # ============================================================
+
+      # continue-on-error permite que Docker, Kubernetes y ZAP se
+      # ejecuten aunque el Quality Gate todavía esté en rojo.
+      # Cuando el Quality Gate pase, este paso aparecerá en verde.
+      - name: SonarQube SAST and Quality Gate
+        id: sonarqube
+        continue-on-error: true
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set +e
+          set -o pipefail
 
           mvn -B \
             org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
             -Dsonar.host.url=https://sonarcloud.io \
             -Dsonar.organization=juangallardo-rgb \
             -Dsonar.projectKey=Juangallardo-rgb_ProyectoFinal \
-            -Dsonar.token="$SONAR_TOKEN" \
+            -Dsonar.token="${SONAR_TOKEN}" \
+            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
+            -Dsonar.qualitygate.wait=true \
+            -Dsonar.qualitygate.timeout=300 \
             2>&1 | tee evidence/sonarqube-output.txt
 
-          SONAR_EXIT_CODE=${PIPESTATUS[0]}
+      - name: Save SonarQube evidence
+        if: always()
+        run: |
+          mkdir -p evidence
 
-          echo "SonarQube exit code: $SONAR_EXIT_CODE" \
-            | tee evidence/sonarqube-status.txt
+          {
+            echo "SonarQube step outcome: ${{ steps.sonarqube.outcome }}"
+            echo "Coverage report: target/site/jacoco/jacoco.xml"
+            echo "Project key: Juangallardo-rgb_ProyectoFinal"
+          } > evidence/sonarqube-status.txt
 
           if [ -f target/sonar/report-task.txt ]; then
             cp target/sonar/report-task.txt \
               evidence/sonarqube-report-task.txt
           fi
 
-          set -e
+      # ============================================================
+      # 7. CONSTRUIR LA IMAGEN DOCKER
+      # ============================================================
 
-      # 7. Construir imagen Docker
       - name: Build Docker image
         run: |
+          set -o pipefail
+
           docker build \
-            -t inventory-app:latest \
+            --tag "${APP_IMAGE}" \
             . 2>&1 | tee evidence/docker-build.txt
 
-          docker image inspect inventory-app:latest \
+          docker image inspect "${APP_IMAGE}" \
             > evidence/docker-image-inspect.json
 
           docker images inventory-app \
             | tee evidence/docker-image-list.txt
 
-      # 8. Instalar kind
-      - name: Install kind securely
-        run: |
-          KIND_VERSION="v0.32.0"
-          KIND_SHA256="50030de23cf40a18505f20426f6a8506bedf13c6e509244bd1fa9463721b0f54"
+      # ============================================================
+      # 8. INSTALAR KIND DE FORMA SEGURA
+      # ============================================================
 
-          curl --fail --location --silent --show-error \
+      - name: Download and verify kind
+        run: |
+          curl \
+            --fail \
+            --location \
+            --silent \
+            --show-error \
             --output kind \
             "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
 
@@ -115,35 +178,60 @@ jobs:
             | sha256sum --check \
             | tee evidence/kind-integrity-verification.txt
 
-          chmod +x kind
-          sudo install kind /usr/local/bin/kind
+          sudo install \
+            --mode 0755 \
+            kind \
+            /usr/local/bin/kind
 
           kind version \
             | tee evidence/kind-version.txt
 
-      # 9. Crear clúster Kubernetes temporal
+      # ============================================================
+      # 9. CREAR EL CLÚSTER KUBERNETES
+      # ============================================================
+
       - name: Create Kubernetes cluster
         run: |
+          set -o pipefail
+
           kind create cluster \
             --name devsecops \
+            --image "${KIND_NODE_IMAGE}" \
             --wait 120s \
             2>&1 | tee evidence/kind-cluster-creation.txt
+
+          kind get clusters \
+            | tee evidence/kind-clusters.txt
 
           kubectl cluster-info \
             | tee evidence/kubernetes-cluster-info.txt
 
-      # 10. Cargar la imagen Docker dentro de kind
+          kubectl get nodes -o wide \
+            | tee evidence/kubernetes-nodes.txt
+
+      # ============================================================
+      # 10. CARGAR LA IMAGEN DOCKER EN KIND
+      # ============================================================
+
       - name: Load Docker image into Kubernetes
         run: |
+          set -o pipefail
+
           kind load docker-image \
-            inventory-app:latest \
+            "${APP_IMAGE}" \
             --name devsecops \
             2>&1 | tee evidence/kind-image-load.txt
 
-      # 11. Desplegar la aplicación en Kubernetes
+      # ============================================================
+      # 11. DESPLEGAR LA APLICACIÓN EN KUBERNETES
+      # ============================================================
+
       - name: Deploy application to Kubernetes
         run: |
-          kubectl apply -f k8s/inventory.yaml \
+          set -o pipefail
+
+          kubectl apply \
+            -f k8s/inventory.yaml \
             | tee evidence/kubernetes-apply.txt
 
           kubectl rollout status \
@@ -160,7 +248,13 @@ jobs:
           kubectl describe deployment inventory-deployment \
             > evidence/kubernetes-deployment-description.txt
 
-      # 12. Exponer temporalmente el servicio
+          kubectl describe service inventory-service \
+            > evidence/kubernetes-service-description.txt
+
+      # ============================================================
+      # 12. PORT-FORWARD PARA PROBAR LA APLICACIÓN
+      # ============================================================
+
       - name: Start Kubernetes port forwarding
         run: |
           nohup kubectl port-forward \
@@ -168,80 +262,132 @@ jobs:
             8080:8080 \
             > evidence/port-forward.txt 2>&1 &
 
-          echo $! > evidence/port-forward-process.txt
+          PORT_FORWARD_PID=$!
 
-          for attempt in {1..20}; do
-            if curl -fsS http://127.0.0.1:8080/health; then
+          echo "${PORT_FORWARD_PID}" \
+            > evidence/port-forward-process.txt
+
+          APPLICATION_READY=false
+
+          for attempt in {1..30}; do
+            if curl \
+              --fail \
+              --silent \
+              --show-error \
+              http://127.0.0.1:8080/health; then
+
+              APPLICATION_READY=true
               echo ""
               echo "Application is available"
               break
             fi
 
-            echo "Waiting for application..."
+            echo "Waiting for application. Attempt ${attempt}/30"
             sleep 2
           done
 
-      # 13. Probar los endpoints desplegados
+          if [ "${APPLICATION_READY}" != "true" ]; then
+            echo "The application did not become available."
+            cat evidence/port-forward.txt || true
+            kubectl get pods -o wide || true
+            kubectl logs deployment/inventory-deployment || true
+            exit 1
+          fi
+
+      # ============================================================
+      # 13. VALIDAR LOS ENDPOINTS
+      # ============================================================
+
       - name: Test deployed application
         run: |
-          curl -fsS http://127.0.0.1:8080/ \
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            http://127.0.0.1:8080/ \
             | tee evidence/root-response.json
 
           echo ""
 
-          curl -fsS http://127.0.0.1:8080/health \
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            http://127.0.0.1:8080/health \
             | tee evidence/health-response.json
 
           echo ""
 
-          curl -fsS http://127.0.0.1:8080/products \
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            http://127.0.0.1:8080/products \
             | tee evidence/products-response.json
 
           echo ""
 
-      # 14. Ejecutar DAST con OWASP ZAP
+      # ============================================================
+      # 14. DAST CON OWASP ZAP
+      # ============================================================
+
+      # Los reportes se crean dentro del contenedor y después se
+      # copian. Así evitamos utilizar chmod 777 en el runner.
       - name: OWASP ZAP DAST analysis
         run: |
-          RUNNER_UID="$(id -u)"
-          RUNNER_GID="$(id -g)"
-          ZAP_UID="1000"
-
-          # Dar temporalmente la carpeta al usuario interno de ZAP,
-          # sin conceder permisos a todos los usuarios.
-          sudo chown -R "${ZAP_UID}:${ZAP_UID}" evidence
-          sudo chmod -R u+rwX,go-rwx evidence
-
-          set +e
-
-          docker run --rm \
+          docker create \
+            --name zap-scan \
             --network host \
-            -v "${{ github.workspace }}/evidence:/zap/wrk/:rw" \
-            -t ghcr.io/zaproxy/zaproxy:stable \
+            --workdir /zap/wrk \
+            ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
             -t http://127.0.0.1:8080 \
             -m 1 \
             -r zap-report.html \
             -J zap-report.json \
             -w zap-report.md \
-            -I \
+            -I
+
+          set +e
+
+          docker start \
+            --attach \
+            zap-scan \
             > /tmp/zap-console-output.txt 2>&1
 
           ZAP_EXIT_CODE=$?
 
           set -e
 
-          # Devolver los archivos al usuario de GitHub Actions.
-          sudo chown -R "${RUNNER_UID}:${RUNNER_GID}" evidence
-          sudo chmod -R u+rwX,go-rwx evidence
-
-          mv /tmp/zap-console-output.txt \
+          cp /tmp/zap-console-output.txt \
             evidence/zap-console-output.txt
 
           echo "OWASP ZAP exit code: ${ZAP_EXIT_CODE}" \
-            > evidence/zap-exit-code.txt
+            | tee evidence/zap-exit-code.txt
 
-      # 15. Crear resumen de resultados
-      - name: Create pipeline summary
+          docker cp \
+            zap-scan:/zap/wrk/zap-report.html \
+            evidence/zap-report.html
+
+          docker cp \
+            zap-scan:/zap/wrk/zap-report.json \
+            evidence/zap-report.json
+
+          docker cp \
+            zap-scan:/zap/wrk/zap-report.md \
+            evidence/zap-report.md
+
+          docker rm zap-scan
+
+          test -s evidence/zap-report.html
+          test -s evidence/zap-report.json
+          test -s evidence/zap-report.md
+
+      # ============================================================
+      # 15. CREAR RESUMEN DE TODAS LAS EVIDENCIAS
+      # ============================================================
+
+      - name: Create pipeline evidence summary
         if: always()
         run: |
           mkdir -p evidence
@@ -251,43 +397,53 @@ jobs:
 
           ## Información general
 
-          - Repositorio: $GITHUB_REPOSITORY
-          - Rama: $GITHUB_REF_NAME
-          - Commit: $GITHUB_SHA
-          - Ejecución: $GITHUB_RUN_NUMBER
+          - Repositorio: ${GITHUB_REPOSITORY}
+          - Rama: ${GITHUB_REF_NAME}
+          - Commit: ${GITHUB_SHA}
+          - Ejecución: ${GITHUB_RUN_NUMBER}
+          - SonarQube: ${{ steps.sonarqube.outcome }}
 
           ## Procesos implementados
 
           1. Compilación con Maven.
           2. Pruebas unitarias con JUnit.
-          3. Generación del artefacto JAR.
-          4. Verificación de integridad con SHA-256.
-          5. Análisis SAST con SonarQube Cloud.
-          6. Construcción de imagen Docker.
-          7. Creación de clúster Kubernetes con kind.
-          8. Despliegue de la aplicación en Kubernetes.
-          9. Validación de disponibilidad mediante HTTP.
-          10. Análisis DAST con OWASP ZAP.
+          3. Cobertura de pruebas con JaCoCo.
+          4. Generación del artefacto JAR.
+          5. Verificación del JAR mediante SHA-256.
+          6. Análisis SAST con SonarQube Cloud.
+          7. Construcción de imagen Docker.
+          8. Verificación del binario de kind mediante SHA-256.
+          9. Creación de clúster Kubernetes con kind.
+          10. Despliegue de la aplicación en Kubernetes.
+          11. Validación de endpoints HTTP.
+          12. Análisis DAST con OWASP ZAP.
 
-          ## Artefactos principales
+          ## Reportes principales
 
           - inventory-app.jar
-          - artifact-sha256.txt
           - integrity-verification.txt
+          - jacoco/index.html
           - sonarqube-output.txt
+          - docker-build.txt
           - kubernetes-pods.txt
           - kubernetes-resources.txt
+          - health-response.json
           - zap-report.html
           - zap-report.json
           - zap-report.md
           EOF
 
-          find evidence -maxdepth 2 -type f \
+          find evidence \
+            -maxdepth 3 \
+            -type f \
             | sort \
             | tee evidence/evidence-file-list.txt
 
-      # 16. Guardar el JAR como artefacto
-      - name: Upload application artifact
+      # ============================================================
+      # 16. PUBLICAR EL JAR
+      # ============================================================
+
+      - name: Upload application JAR
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -296,7 +452,10 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-      # 17. Guardar todas las evidencias
+      # ============================================================
+      # 17. PUBLICAR TODAS LAS EVIDENCIAS
+      # ============================================================
+
       - name: Upload DevSecOps evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -305,3 +464,13 @@ jobs:
           path: evidence/
           if-no-files-found: warn
           retention-days: 7
+
+      # ============================================================
+      # 18. LIMPIEZA
+      # ============================================================
+
+      - name: Clean temporary resources
+        if: always()
+        run: |
+          docker rm --force zap-scan 2>/dev/null || true
+          kind delete cluster --name devsecops || true
